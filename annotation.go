@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"reflect"
 	"strconv"
 	"strings"
 
@@ -52,6 +53,12 @@ func HasAnnotationRecursive(node dst.Node) bool {
 	}
 
 	switch n := node.(type) {
+	case *dst.CompositeLit:
+		for _, elt := range n.Elts {
+			if HasAnnotationRecursive(elt) {
+				return true
+			}
+		}
 	case *dst.GenDecl:
 		for _, spec := range n.Specs {
 			if HasAnnotationRecursive(spec) {
@@ -102,7 +109,7 @@ func HasAnnotationRecursive(node dst.Node) bool {
 			}
 		}
 	default:
-		log.Debugf("Couldn't analyze type for annotations: %+v", n)
+		log.Debugf("Couldn't analyze type for annotations: %+v", reflect.TypeOf(n))
 	}
 
 	return false
