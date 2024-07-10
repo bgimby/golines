@@ -103,6 +103,38 @@ func (s *Shortener) Shorten(contents []byte) ([]byte, error) {
 		return nil, fmt.Errorf("Error formatting source: %+v", err)
 	}
 
+	// Annotate all short lines
+	lines := strings.Split(string(contents), "\n")
+	annotatedLines, _ := s.annotateShortLines(lines)
+	contents = []byte(strings.Join(annotatedLines, "\n"))
+	// Generate AST
+	result, err := decorator.Parse(contents)
+	if err != nil {
+		return nil, err
+	}
+	// Shorten the file starting at the top-level declarations
+	for _, decl := range result.Decls {
+		s.combineNode(decl)
+	}
+
+	// Materialize output
+	output := bytes.NewBuffer([]byte{})
+	err = decorator.Fprint(output, result)
+	if err != nil {
+		return nil, fmt.Errorf("Error parsing source: %+v", err)
+	}
+	contents = output.Bytes()
+
+	if !s.config.KeepAnnotations {
+		contents = s.removeCombineAnnotations(contents)
+	}
+
+	// Do post-combining, non-line-length-aware formatting
+	contents, err = s.formatSrc(contents)
+	if err != nil {
+		return nil, fmt.Errorf("Error formatting source: %+v", err)
+	}
+
 	for {
 		log.Debugf("Starting round %d", round)
 
@@ -221,6 +253,32 @@ func (s *Shortener) formatSrc(contents []byte) ([]byte, error) {
 	return outBuffer.Bytes(), nil
 }
 
+// annotateShortLines adds specially-formatted comments to eligible lines that could be combined
+// with the next without becoming longer than the configured target length.
+// If a line has one of these comments from a previous shortening round, then the comment contents
+// are updated.
+func (s *Shortener) annotateShortLines(lines []string) ([]string, int) {
+	annotatedLines := []string{}
+	linesToCombine := 0
+
+	for i, line := range lines[:len(lines)-1] {
+		length := s.lineLen(line)
+		// add one because combining lines will likely need a space between them
+		nextLen := s.lineLenStripLeadingWhitespace(lines[i+1]) + 1
+		if !s.isComment(line) && nextLen > 1 && length+nextLen < s.config.MaxLen {
+			annotatedLines = append(
+				annotatedLines,
+				CreateCombineAnnotation(),
+			)
+			linesToCombine++
+		}
+
+		annotatedLines = append(annotatedLines, line)
+	}
+
+	return annotatedLines, linesToCombine
+}
+
 // annotateLongLines adds specially-formatted comments to all eligible lines that are longer than
 // the configured target length. If a line already has one of these comments from a previous
 // shortening round, then the comment contents are updated.
@@ -254,6 +312,18 @@ func (s *Shortener) annotateLongLines(lines []string) ([]string, int) {
 	}
 
 	return annotatedLines, linesToShorten
+}
+
+func (s *Shortener) removeCombineAnnotations(contents []byte) []byte {
+	cleanedLines := []string{}
+	lines := strings.Split(string(contents), "\n")
+	for _, line := range lines {
+		if strings.TrimSpace(line) == combineAnnotationSuffix {
+			continue
+		}
+		cleanedLines = append(cleanedLines, RemoveCombineSuffix(line))
+	}
+	return []byte(strings.Join(cleanedLines, "\n"))
 }
 
 // removeAnnotations removes all comments that were added by the annotateLongLines
@@ -326,6 +396,20 @@ func (s *Shortener) shortenCommentsFunc(contents []byte) []byte {
 	return []byte(strings.Join(cleanedLines, "\n"))
 }
 
+// lineLenStripLeadingWhitespace gets the length of the provided line excluding leading tabs
+func (s *Shortener) lineLenStripLeadingWhitespace(line string) int {
+	whitespaces := 0
+	for i, char := range line {
+		if char == ' ' || char == '\t' {
+			continue
+		} else {
+			whitespaces = i
+			break
+		}
+	}
+	return len(line) - whitespaces
+}
+
 // lineLen gets the width of the provided line after tab expansion.
 func (s *Shortener) lineLen(line string) int {
 	length := 0
@@ -375,6 +459,30 @@ func (s *Shortener) formatNode(node dst.Node) {
 	}
 }
 
+// combineNode combines the provided AST node. The appropriate helper function is called
+// based on whether the node is a declaration, expression, statement, or spec.
+func (s *Shortener) combineNode(node dst.Node) {
+	switch n := node.(type) {
+	case dst.Decl:
+		log.Debugf("Processing declaration: %+v", n)
+		s.combineDecl(n)
+	default:
+		log.Warnf(
+			"Got a node type that can't be shortened: %+v",
+			reflect.TypeOf(n),
+		)
+	}
+}
+
+func (s *Shortener) combineDecl(decl dst.Decl) {
+	switch d := decl.(type) {
+	case *dst.FuncDecl:
+		s.combineStmt(d.Body)
+	default:
+		log.Warnf("Got a node type that can't be combined: %+v", reflect.TypeOf(d))
+	}
+}
+
 // formatDecl formats an AST declaration node. These include function declarations,
 // imports, and constants.
 func (s *Shortener) formatDecl(decl dst.Decl) {
@@ -408,6 +516,29 @@ func (s *Shortener) formatFieldList(fieldList *dst.FieldList) {
 		}
 
 		field.Decorations().After = dst.NewLine
+	}
+}
+
+func (s *Shortener) combineStmt(stmt dst.Stmt) {
+	// Explicitly check for nil statements
+	stmtType := reflect.TypeOf(stmt)
+	if reflect.ValueOf(stmt) == reflect.Zero(stmtType) {
+		return
+	}
+
+	shouldShorten := HasCombineAnnotation(stmt)
+	if shouldShorten {
+		RemoveCombineAnnotations(stmt)
+	}
+	switch st := stmt.(type) {
+	case *dst.BlockStmt:
+		for _, stmt := range st.List {
+			s.combineStmt(stmt)
+		}
+	case *dst.AssignStmt:
+		for _, expr := range st.Rhs {
+			s.combineExpr(expr, shouldShorten)
+		}
 	}
 }
 
@@ -475,6 +606,16 @@ func (s *Shortener) formatStmt(stmt dst.Stmt) {
 				"Got a statement type that can't be shortened: %+v",
 				reflect.TypeOf(st),
 			)
+		}
+	}
+}
+
+func (s *Shortener) combineExpr(expr dst.Expr, shouldShorten bool) {
+	switch e := expr.(type) {
+	case *dst.BinaryExpr:
+		if shouldShorten && e.Y.Decorations().Before == dst.NewLine {
+			e.Y.Decorations().Before = dst.None
+			RemoveCombineAnnotations(e)
 		}
 	}
 }
@@ -575,6 +716,17 @@ func (s *Shortener) formatExpr(expr dst.Expr, force bool, isChain bool) {
 				reflect.TypeOf(e),
 			)
 		}
+	}
+}
+
+func (s *Shortener) combineSpec(spec dst.Spec) {
+	switch sp := spec.(type) {
+	case *dst.ValueSpec:
+		for _, expr := range sp.Values {
+			s.combineExpr(expr, false)
+		}
+	default:
+		log.Warnf("Got a spec type we can't combine: %+v", reflect.TypeOf(sp))
 	}
 }
 
