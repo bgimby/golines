@@ -8,5 +8,9 @@ func CaseLists() {
 	switch x {
 	case "a really long string", "another really long string", "a third really long string", "a fourth really long string":
 		fmt.Println("hello")
+	case "a",
+		"b",
+		"c":
+		fmt.Println("hello")
 	}
 }

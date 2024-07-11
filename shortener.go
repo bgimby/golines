@@ -96,37 +96,44 @@ func (s *Shortener) Shorten(contents []byte) ([]byte, error) {
 
 	round := 0
 	var err error
+	combineRound := 0
 
-	// Do initial, non-line-length-aware formatting
-	contents, err = s.formatSrc(contents)
-	if err != nil {
-		return nil, fmt.Errorf("Error formatting source: %+v", err)
-	}
+	for {
+		// Do initial, non-line-length-aware formatting
+		contents, err = s.formatSrc(contents)
+		if err != nil {
+			return nil, fmt.Errorf("Error formatting source: %+v", err)
+		}
 
-	// Annotate all short lines
-	lines := strings.Split(string(contents), "\n")
-	annotatedLines, _ := s.annotateShortLines(lines)
-	contents = []byte(strings.Join(annotatedLines, "\n"))
-	// Generate AST
-	result, err := decorator.Parse(contents)
-	if err != nil {
-		return nil, err
-	}
-	// Shorten the file starting at the top-level declarations
-	for _, decl := range result.Decls {
-		s.combineNode(decl)
-	}
+		// Annotate all short lines
+		lines := strings.Split(string(contents), "\n")
+		annotatedLines, _ := s.annotateShortLines(lines)
+		contents = []byte(strings.Join(annotatedLines, "\n"))
+		// Generate AST
+		result, err := decorator.Parse(contents)
+		if err != nil {
+			return nil, err
+		}
+		// Shorten the file starting at the top-level declarations
+		for _, decl := range result.Decls {
+			s.combineNode(decl)
+		}
 
-	// Materialize output
-	output := bytes.NewBuffer([]byte{})
-	err = decorator.Fprint(output, result)
-	if err != nil {
-		return nil, fmt.Errorf("Error parsing source: %+v", err)
-	}
-	contents = output.Bytes()
+		// Materialize output
+		output := bytes.NewBuffer([]byte{})
+		err = decorator.Fprint(output, result)
+		if err != nil {
+			return nil, fmt.Errorf("Error parsing source: %+v", err)
+		}
+		contents = output.Bytes()
 
-	if !s.config.KeepAnnotations {
-		contents = s.removeCombineAnnotations(contents)
+		if (combineRound < 5) || !s.config.KeepAnnotations {
+			contents = s.removeCombineAnnotations(contents)
+		}
+		combineRound++
+		if combineRound > 5 {
+			break
+		}
 	}
 
 	// Do post-combining, non-line-length-aware formatting
@@ -262,15 +269,18 @@ func (s *Shortener) annotateShortLines(lines []string) ([]string, int) {
 	linesToCombine := 0
 
 	for i, line := range lines[:len(lines)-1] {
-		length := s.lineLen(line)
-		// add one because combining lines will likely need a space between them
-		nextLen := s.lineLenStripLeadingWhitespace(lines[i+1]) + 1
-		if !s.isComment(line) && nextLen > 1 && length+nextLen < s.config.MaxLen {
-			annotatedLines = append(
-				annotatedLines,
-				CreateCombineAnnotation(),
-			)
-			linesToCombine++
+		// Don't try to combine lines that are just a newline character
+		if s.lineLenStripLeadingWhitespace(line) > 1 {
+			length := s.lineLen(line)
+			// add one because combining lines will likely need a space between them
+			nextLen := s.lineLenStripLeadingWhitespace(lines[i+1]) + 1
+			if !s.isComment(line) && nextLen > 1 && length+nextLen < s.config.MaxLen {
+				annotatedLines = append(
+					annotatedLines,
+					CreateCombineAnnotation(),
+				)
+				linesToCombine++
+			}
 		}
 
 		annotatedLines = append(annotatedLines, line)
@@ -539,7 +549,14 @@ func (s *Shortener) combineStmt(stmt dst.Stmt) {
 		for _, expr := range st.Rhs {
 			s.combineExpr(expr, shouldShorten)
 		}
+	case *dst.SwitchStmt:
+		s.combineStmt(st.Body)
+	case *dst.CaseClause:
+		for _, arg := range st.List {
+			s.combineExpr(arg, shouldShorten)
+		}
 	}
+
 }
 
 // formatStmt formats an AST statement node. Among other examples, these include assignments,
@@ -616,11 +633,23 @@ func (s *Shortener) combineExpr(expr dst.Expr, shouldShorten bool) {
 		if shouldShorten && e.Y.Decorations().Before == dst.NewLine {
 			e.Y.Decorations().Before = dst.None
 			RemoveCombineAnnotations(e)
+		} else {
+			s.combineExpr(e.X, shouldShorten)
+			s.combineExpr(e.Y, shouldShorten)
+		}
+	case *dst.BasicLit:
+		if shouldShorten && e.Decorations().Before == dst.NewLine {
+			RemoveCombineAnnotations(e)
+			e.Decorations().Before = dst.None
+		}
+		if shouldShorten && e.Decorations().After == dst.NewLine {
+			RemoveCombineAnnotations(e)
+			e.Decorations().After = dst.None
 		}
 	}
 }
 
-// formatExpr formats an AST expression node. These include uniary and binary expressions, function
+// formatExpr formats an AST expression node. These include unary and binary expressions, function
 // literals, and key/value pair statements, among others.
 func (s *Shortener) formatExpr(expr dst.Expr, force bool, isChain bool) {
 	shouldShorten := force || HasAnnotation(expr)

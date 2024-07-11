@@ -11,5 +11,7 @@ func CaseLists() {
 		"a third really long string",
 		"a fourth really long string":
 		fmt.Println("hello")
+	case "a", "b", "c":
+		fmt.Println("hello")
 	}
 }

@@ -14,5 +14,5 @@ func testBinaryOperators() {
 	y := "hello this is a big string" || "this is a small string" || "the smallest string" ||
 		"this is another big string" ||
 		"this is an even bigger string >>>"
-	x := 1 + 2
+	x := 1 + 2 + 3 + 4
 }
