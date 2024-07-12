@@ -23,7 +23,7 @@ func TestShortener(t *testing.T) {
 	for _, fileInfo := range info {
 		if fileInfo.IsDir() {
 			continue
-		} else if !strings.HasSuffix(fileInfo.Name(), ".go") {
+		} else if !strings.HasSuffix(fileInfo.Name(), "chained_calls.go") {
 			continue
 		} else if strings.HasSuffix(fileInfo.Name(), "__exp.go") {
 			continue

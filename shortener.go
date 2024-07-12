@@ -555,6 +555,8 @@ func (s *Shortener) combineStmt(stmt dst.Stmt) {
 		for _, arg := range st.List {
 			s.combineExpr(arg, shouldShorten)
 		}
+	case *dst.ExprStmt:
+		s.combineExpr(st.X, shouldShorten)
 	}
 
 }
@@ -628,22 +630,37 @@ func (s *Shortener) formatStmt(stmt dst.Stmt) {
 }
 
 func (s *Shortener) combineExpr(expr dst.Expr, shouldShorten bool) {
+	if shouldShorten {
+		RemoveCombineAnnotations(expr)
+	}
 	switch e := expr.(type) {
 	case *dst.BinaryExpr:
 		if shouldShorten && e.Y.Decorations().Before == dst.NewLine {
 			e.Y.Decorations().Before = dst.None
-			RemoveCombineAnnotations(e)
 		} else {
 			s.combineExpr(e.X, shouldShorten)
 			s.combineExpr(e.Y, shouldShorten)
 		}
 	case *dst.BasicLit:
 		if shouldShorten && e.Decorations().Before == dst.NewLine {
-			RemoveCombineAnnotations(e)
 			e.Decorations().Before = dst.None
 		}
 		if shouldShorten && e.Decorations().After == dst.NewLine {
-			RemoveCombineAnnotations(e)
+			e.Decorations().After = dst.None
+		}
+	case *dst.CallExpr:
+		s.combineExpr(e.Fun, shouldShorten)
+		for _, arg := range e.Args {
+			s.combineExpr(arg, shouldShorten)
+		}
+	case *dst.SelectorExpr:
+		s.combineExpr(e.X, shouldShorten)
+		s.combineExpr(e.Sel, shouldShorten)
+	case *dst.Ident:
+		if shouldShorten && e.Decorations().Before == dst.NewLine {
+			e.Decorations().Before = dst.None
+		}
+		if shouldShorten && e.Decorations().After == dst.NewLine {
 			e.Decorations().After = dst.None
 		}
 	}
