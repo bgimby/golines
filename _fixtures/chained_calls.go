@@ -22,4 +22,8 @@ func ChainedCalls() {
 	NewChain().ChainCall("a", "b", "c").ChainCall("d", "e", "f")
 	NewChain().ChainCall("a", "b", "c").
 		ChainCall("d", "e", "f").ChainCall("g", "h", "i")
+	NewChain().
+		ChainCall("a", "b", "c")
+	c.
+		ChainCall("a", "b", "c")
 }

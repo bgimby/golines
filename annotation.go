@@ -10,6 +10,12 @@ import (
 )
 
 const annotationPrefix = "// __golines:shorten:"
+const combineAnnotationSuffix = "// __golines:combine"
+
+// CreateCombineAnnotation generates the text of a comment that will annotate lines to be combined
+func CreateCombineAnnotation() string {
+	return fmt.Sprintf("%s", combineAnnotationSuffix)
+}
 
 // CreateAnnotation generates the text of a comment that will annotate long lines.
 func CreateAnnotation(length int) string {
@@ -20,12 +26,46 @@ func CreateAnnotation(length int) string {
 	)
 }
 
+func IsCombineAnnotation(line string) bool {
+	return strings.HasSuffix(line, combineAnnotationSuffix)
+}
+
 // IsAnnotation determines whether the given line is an annotation created with CreateAnnotation.
 func IsAnnotation(line string) bool {
 	return strings.HasPrefix(
 		strings.Trim(line, " \t"),
 		annotationPrefix,
 	)
+}
+
+func HasCombineAnnotation(node dst.Node) bool {
+	startDecorations := node.Decorations().Start.All()
+	return len(startDecorations) > 0 && IsCombineAnnotation(startDecorations[len(startDecorations)-1])
+}
+
+func RemoveCombineSuffix(line string) string {
+	trimmed := strings.TrimSuffix(line, combineAnnotationSuffix)
+	return trimmed
+}
+
+func RemoveCombineAnnotations(node dst.Node) {
+	for i, dec := range node.Decorations().Start.All() {
+		if IsCombineAnnotation(dec) {
+			node.Decorations().Start = append(node.Decorations().Start[:i], node.Decorations().Start[i+1:]...)
+			break
+		}
+	}
+	for i, dec := range node.Decorations().End.All() {
+		if IsCombineAnnotation(dec) {
+			node.Decorations().End = append(node.Decorations().End[:i], node.Decorations().End[i+1:]...)
+			break
+		}
+	}
+	switch n := node.(type) {
+	case *dst.BinaryExpr:
+		RemoveCombineAnnotations(n.X)
+		RemoveCombineAnnotations(n.Y)
+	}
 }
 
 // HasAnnotation determines whether the given AST node has a line length annotation on it.
